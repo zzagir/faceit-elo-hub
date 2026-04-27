@@ -10,10 +10,17 @@ export async function GET(request) {
 
   try {
     const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      'Accept': 'application/json',
-      'Referer': 'https://ru.faceitanalyser.com/'
-    };
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)...',
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'ru-RU,ru;q=0.9',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Origin': 'https://ru.faceitanalyser.com',
+  'Referer': 'https://ru.faceitanalyser.com/',
+  'sec-ch-ua': '"Chromium";v="124"',
+  'sec-fetch-dest': 'empty',
+  'sec-fetch-mode': 'cors',
+  'sec-fetch-site': 'same-origin',
+};
 
     // 1. Сначала ищем ID игрока (на ru.faceitanalyser он в ключе "id")
     const searchRes = await fetch(`https://ru.faceitanalyser.com/api/searchPlayer/${inputNick}`, { headers });
