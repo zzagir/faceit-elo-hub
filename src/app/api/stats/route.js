@@ -1,8 +1,15 @@
 import { NextResponse } from 'next/server';
-import { gotScraping } from 'got-scraping';
 
-// Отключаем кэширование, чтобы всегда парсить свежие данные
 export const dynamic = 'force-dynamic';
+
+// Фейковые заголовки браузера, чтобы скрытое API FACEIT не блокировало запрос
+const browserHeaders = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+  'Origin': 'https://www.faceit.com',
+  'Referer': 'https://www.faceit.com/'
+};
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
@@ -12,10 +19,8 @@ export async function GET(request) {
     return NextResponse.json({ error: "Укажите никнейм" }, { status: 400 });
   }
 
-  // Создаем поток данных (Stream) для живых обновлений
   const stream = new ReadableStream({
     async start(controller) {
-      // Функция-помощник для отправки данных клиенту
       const send = (data) => {
         controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`));
       };
@@ -33,7 +38,6 @@ export async function GET(request) {
         let player = await playerRes.json();
 
         if (!player.player_id) {
-          // Умный поиск, если точный ник не найден
           const searchRes = await fetch(
             `https://open.faceit.com/data/v4/search/players?nickname=${inputNick}&offset=0&limit=5`,
             { headers: { Authorization: `Bearer ${FACEIT_KEY}` } }
@@ -57,15 +61,22 @@ export async function GET(request) {
         const exactNick = player.nickname;
         const currentElo = player.games?.cs2?.faceit_elo || 0;
 
-        // 2. Получаем базовую статистику за последние 30 матчей (параллельно)
+        // 2. Базовая статистика (Обычный fetch вместо got-scraping!)
         send({ type: "status", text: "📊 Собираю актуальную форму (K/D, ADR)..." });
+        
         const [v4Res, v1Res] = await Promise.all([
-          fetch(`https://open.faceit.com/data/v4/players/${playerId}/games/cs2/stats?limit=30`, { headers: { Authorization: `Bearer ${FACEIT_KEY}` } }),
-          gotScraping({ url: `https://api.faceit.com/stats/v1/stats/time/users/${playerId}/games/cs2?size=30` })
+          fetch(`https://open.faceit.com/data/v4/players/${playerId}/games/cs2/stats?limit=30`, { 
+            headers: { Authorization: `Bearer ${FACEIT_KEY}` } 
+          }),
+          fetch(`https://api.faceit.com/stats/v1/stats/time/users/${playerId}/games/cs2?size=30`, { 
+            headers: browserHeaders 
+          })
         ]);
 
         const v4games = (await v4Res.json()).items || [];
-        const v1games = JSON.parse(v1Res.body) || [];
+        const v1gamesText = await v1Res.text();
+        const v1games = v1gamesText ? JSON.parse(v1gamesText) : [];
+        
         const v4Map = {};
         v4games.forEach(g => { if (g.stats && g.stats["Match Id"]) v4Map[g.stats["Match Id"]] = g.stats; });
 
@@ -83,20 +94,23 @@ export async function GET(request) {
 
         if (recentCount === 0) recentCount = 1;
 
-        // 3. ПОЛНЫЙ СКАНЕР ПИКА ELO (Ищем по всей истории)
+        // 3. ПОЛНЫЙ СКАНЕР ПИКА ELO
         let maxElo = currentElo;
         let totalChecked = 0;
         let currentTo = Date.now();
 
         send({ type: "progress", text: "⏳ Ищу пик ELO...", checked: 0, currentPeak: maxElo });
 
-        // Машина времени — скачиваем матчи пачками по 100
         while (true) {
-          const response = await gotScraping({
-            url: `https://api.faceit.com/stats/v1/stats/time/users/${playerId}/games/cs2?size=100&to=${currentTo}`,
-          });
+          const response = await fetch(
+            `https://api.faceit.com/stats/v1/stats/time/users/${playerId}/games/cs2?size=100&to=${currentTo}`,
+            { headers: browserHeaders }
+          );
           
-          const graphData = JSON.parse(response.body);
+          const rawData = await response.text();
+          if (!rawData) break;
+          
+          const graphData = JSON.parse(rawData);
           if (!Array.isArray(graphData) || graphData.length === 0) break;
 
           const validMatches = graphData.filter(m => m.elo && parseInt(m.elo) > 0);
@@ -107,21 +121,22 @@ export async function GET(request) {
             if (eloNum > maxElo) maxElo = eloNum;
           }
 
-          // Отправляем промежуточный прогресс на сайт!
           send({ type: "progress", text: "⏳ Ищу пик ELO...", checked: totalChecked, currentPeak: maxElo });
 
           if (graphData.length < 100) break;
           currentTo = graphData[graphData.length - 1].date - 1;
           
-          // Пауза, чтобы не забанил FACEIT
           await new Promise(r => setTimeout(r, 400));
         }
 
-        // 4. Отправляем финальный результат
+        // 4. Отправляем финальный результат (с аватаром и уровнем)
         send({
           type: "complete",
           stats: {
             nick: exactNick,
+            avatar: player.avatar || "",
+            level: player.games?.cs2?.skill_level || 0,
+            country: player.country || "un",
             currentElo: currentElo,
             peakElo: maxElo,
             winrate: Math.round((wins / recentCount) * 100),
@@ -134,6 +149,7 @@ export async function GET(request) {
         
         controller.close();
       } catch (error) {
+        console.error("API Stream Error:", error);
         send({ type: "error", error: "Внутренняя ошибка сервера" });
         controller.close();
       }
