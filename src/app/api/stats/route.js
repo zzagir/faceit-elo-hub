@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { gotScraping } from 'got-scraping';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,153 +10,76 @@ export async function GET(request) {
     return NextResponse.json({ error: "Укажите никнейм" }, { status: 400 });
   }
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      const send = (data) => {
-        controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`));
-      };
+  try {
+    const headersFA = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
+      'Accept': 'application/json'
+    };
 
-      try {
-        const FACEIT_KEY = process.env.FACEIT_API_KEY;
+    const FACEIT_KEY = process.env.FACEIT_API_KEY;
 
-        send({ type: "status", text: "🔍 Ищу игрока на FACEIT..." });
-        
-        let playerRes = await fetch(
-          `https://open.faceit.com/data/v4/players?nickname=${inputNick}&game=cs2`,
-          { headers: { Authorization: `Bearer ${FACEIT_KEY}` } }
-        );
-        let player = await playerRes.json();
-
-        if (!player.player_id) {
-          const searchRes = await fetch(
-            `https://open.faceit.com/data/v4/search/players?nickname=${inputNick}&offset=0&limit=5`,
-            { headers: { Authorization: `Bearer ${FACEIT_KEY}` } }
-          );
-          const searchData = await searchRes.json();
-          const exactMatch = searchData.items?.find(p => p.nickname.toLowerCase() === inputNick.toLowerCase());
-          
-          if (exactMatch) {
-            const exactRes = await fetch(
-              `https://open.faceit.com/data/v4/players?nickname=${exactMatch.nickname}&game=cs2`,
-              { headers: { Authorization: `Bearer ${FACEIT_KEY}` } }
-            );
-            player = await exactRes.json();
-          } else {
-            send({ type: "error", error: `Игрок "${inputNick}" не найден` });
-            return controller.close();
-          }
-        }
-
-        const playerId = player.player_id;
-        const exactNick = player.nickname;
-        const currentElo = player.games?.cs2?.faceit_elo || 0;
-
-        send({ type: "status", text: "📊 Собираю актуальную форму..." });
-        
-        // Используем gotScraping для скрытого API, чтобы пробить Cloudflare
-        const [v4Res, v1Res] = await Promise.all([
-          fetch(`https://open.faceit.com/data/v4/players/${playerId}/games/cs2/stats?limit=30`, { 
-            headers: { Authorization: `Bearer ${FACEIT_KEY}` } 
-          }),
-          gotScraping({ url: `https://api.faceit.com/stats/v1/stats/time/users/${playerId}/games/cs2?size=30` })
-        ]);
-
-        const v4games = (await v4Res.json()).items || [];
-        const rawV1Body = v1Res.body;
-
-        // Защита от Cloudflare: проверяем, не подсунули ли нам HTML
-        if (typeof rawV1Body === 'string' && rawV1Body.trim().startsWith('<')) {
-           send({ type: "error", error: "Защита FACEIT заблокировала запрос. Попробуйте чуть позже." });
-           return controller.close();
-        }
-
-        const v1games = JSON.parse(rawV1Body) || [];
-        
-        const v4Map = {};
-        v4games.forEach(g => { if (g.stats && g.stats["Match Id"]) v4Map[g.stats["Match Id"]] = g.stats; });
-
-        let wins = 0, kills = 0, kd = 0, adr = 0, recentCount = 0;
-        v1games.forEach((m) => {
-          const s = v4Map[m.matchId];
-          if (s) {
-            recentCount++;
-            if (s.Result === '1') wins++;
-            kills += parseFloat(s.Kills) || 0;
-            kd += parseFloat(s["K/D Ratio"]) || 0;
-            adr += parseFloat(s.ADR) || 0;
-          }
-        });
-
-        if (recentCount === 0) recentCount = 1;
-
-        // ПОЛНЫЙ СКАНЕР ПИКА ELO
-        let maxElo = currentElo;
-        let totalChecked = 0;
-        let currentTo = Date.now();
-
-        send({ type: "progress", text: "⏳ Ищу пик ELO...", checked: 0, currentPeak: maxElo });
-
-        while (true) {
-          const response = await gotScraping({
-            url: `https://api.faceit.com/stats/v1/stats/time/users/${playerId}/games/cs2?size=100&to=${currentTo}`
-          });
-          
-          const rawData = response.body;
-          if (!rawData || (typeof rawData === 'string' && rawData.trim().startsWith('<'))) break;
-          
-          const graphData = JSON.parse(rawData);
-          if (!Array.isArray(graphData) || graphData.length === 0) break;
-
-          const validMatches = graphData.filter(m => m.elo && parseInt(m.elo) > 0);
-          totalChecked += validMatches.length;
-
-          for (const m of validMatches) {
-            const eloNum = parseInt(m.elo);
-            if (eloNum > maxElo) maxElo = eloNum;
-          }
-
-          send({ type: "progress", text: "⏳ Ищу пик ELO...", checked: totalChecked, currentPeak: maxElo });
-
-          if (graphData.length < 100) break;
-          currentTo = graphData[graphData.length - 1].date - 1;
-          
-          await new Promise(r => setTimeout(r, 400));
-        }
-
-        send({
-          type: "complete",
-          stats: {
-            nick: exactNick,
-            avatar: player.avatar || "",
-            level: player.games?.cs2?.skill_level || 0,
-            country: player.country || "un",
-            currentElo: currentElo,
-            peakElo: maxElo,
-            winrate: Math.round((wins / recentCount) * 100),
-            kd: (kd / recentCount).toFixed(2),
-            adr: (adr / recentCount).toFixed(1),
-            avgKills: (kills / recentCount).toFixed(1),
-            totalScanned: totalChecked
-          }
-        });
-        
-        controller.close();
-      } catch (error) {
-        console.error("Критическая ошибка:", error);
-        send({ 
-          type: "error", 
-          error: `Детали ошибки: ${error.message}` 
-        });
-        controller.close();
-      }
+    // 1. Ищем ID игрока через открытый эндпоинт FaceitAnalyser
+    const searchRes = await fetch(`https://ru.faceitanalyser.com/api/searchPlayer/${inputNick}`, { headers: headersFA });
+    const searchText = await searchRes.text();
+    
+    if (!searchText) return NextResponse.json({ error: "Пустой ответ от сервера поиска" }, { status: 500 });
+    
+    const searchData = JSON.parse(searchText);
+    
+    if (!searchData || searchData.error || !searchData.id) {
+      return NextResponse.json({ error: `Игрок "${inputNick}" не найден` }, { status: 404 });
     }
-  });
 
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-    },
-  });
+    const playerId = searchData.id;
+    const currentElo = searchData.games?.cs2?.faceit_elo || 0;
+    const avatar = searchData.avatar || "";
+    const country = searchData.country || "un";
+    const cs2Game = searchData.games?.find(g => g.name === 'cs2' || g.name === 'csgo');
+    const level = cs2Game ? cs2Game.skill_level : 0;
+
+    // 2. ДЕЛАЕМ ИДЕАЛЬНУЮ КОМБИНАЦИЮ:
+    // - График берем с Анализатора (ради Пика ELO)
+    // - Статистику берем напрямую из ОФИЦИАЛЬНОГО FACEIT API (с твоим ключом)
+    const [graphRes, officialStatsRes] = await Promise.all([
+      fetch(`https://ru.faceitanalyser.com/api/graph/${playerId}/cs2`, { headers: headersFA }),
+      fetch(`https://open.faceit.com/data/v4/players/${playerId}/stats/cs2`, { 
+        headers: { Authorization: `Bearer ${FACEIT_KEY}` } 
+      })
+    ]);
+
+    const graphText = await graphRes.text();
+    const graphData = graphText ? JSON.parse(graphText) : {};
+    
+    const officialStatsData = await officialStatsRes.json();
+
+    // 3. Достаем Пик ELO из Анализатора
+    const peakElo = graphData.graph_data?.elo?.max || currentElo;
+    const totalScanned = graphData.graph_data?.elo?.values?.length || 0;
+
+    // 4. Достаем K/D и Winrate из официального API
+    const lifetime = officialStatsData.lifetime || {};
+    const winrate = lifetime["Win Rate %"] || 0;
+    const kd = lifetime["Average K/D Ratio"] || 0;
+    const avgKills = lifetime["Average Kills"] || 0;
+    // ADR в официальном API нет, но K/D и Винрейт там самые точные
+    const adr = 0; 
+
+    return NextResponse.json({
+      nick: searchData.nickname,
+      avatar: avatar,
+      level: level,
+      country: country,
+      currentElo: currentElo,
+      peakElo: peakElo,
+      winrate: Math.round(Number(winrate)),
+      kd: Number(kd).toFixed(2),
+      adr: Number(adr).toFixed(1),
+      avgKills: Number(avgKills).toFixed(1),
+      totalScanned: totalScanned
+    });
+
+  } catch (error) {
+    console.error("API Error:", error);
+    return NextResponse.json({ error: `Техническая ошибка: ${error.message}` }, { status: 500 });
+  }
 }

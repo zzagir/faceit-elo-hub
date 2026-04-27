@@ -19,44 +19,22 @@ export default function PlayerPage() {
 
     const fetchStats = async () => {
       try {
+        // Запрашиваем наш собственный API
         const response = await fetch(`/api/stats?nick=${nick}`);
-        if (!response.body) throw new Error("Поток не поддерживается");
+        const data = await response.json();
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder("utf-8");
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done || !isMounted) break;
-
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split('\n');
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = JSON.parse(line.substring(6));
-
-              if (data.type === "status") {
-                setStatusText(data.text);
-              } else if (data.type === "progress") {
-                setStatusText(data.text);
-                setScannedCount(data.checked);
-                setTempPeak(data.currentPeak);
-              } else if (data.type === "complete") {
-                setStats(data.stats);
-                setLoading(false);
-              } else if (data.type === "error") {
-                setError(data.error);
-                setLoading(false);
-              }
-            }
-          }
+        if (data.error) {
+          setError(data.error);
+        } else {
+          setStats(data);
         }
       } catch (err) {
-        setError("Ошибка при получении данных");
+        setError("Ошибка при загрузке данных");
+      } finally {
         setLoading(false);
       }
     };
+    
 
     fetchStats();
     return () => { isMounted = false; };
