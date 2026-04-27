@@ -102,7 +102,7 @@ export async function GET(request) {
       }
     }
 
-    // 4. Пик ELO
+    // 4. Пик ELO test
     const { peakElo, peakDate, totalScanned } = await scanMatchesForPeak(playerId);
 
     return NextResponse.json({
