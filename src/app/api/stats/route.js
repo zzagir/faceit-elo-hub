@@ -143,8 +143,11 @@ export async function GET(request) {
         
         controller.close();
       } catch (error) {
-        console.error("API Stream Error:", error.message);
-        send({ type: "error", error: "Внутренняя ошибка сервера при парсинге." });
+        console.error("Критическая ошибка:", error);
+        send({ 
+          type: "error", 
+          error: `Детали ошибки: ${error.message}` 
+        });
         controller.close();
       }
     }
