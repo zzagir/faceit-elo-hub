@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 
+export const runtime = 'edge'; // добавь в route.js
 export const dynamic = 'force-dynamic';
 
 async function scanMatchesForPeak(playerId) {
